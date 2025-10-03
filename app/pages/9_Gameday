@@ -1,0 +1,23 @@
+import streamlit as st
+from _auth import require_login, is_staff, supa
+prof = require_login()
+st.title("Gameday Infos")
+
+gds = supa().table("gameday").select("*").execute().data
+for g in gds:
+    st.write(f"Treffpunkt {g['meet_at']} Uhr @ {g['location']} — Jerseys: {g.get('jerseys','')}")
+
+if is_staff(prof):
+    with st.form("newgd"):
+        meet = st.text_input("Treffpunkt Zeit")
+        loc = st.text_input("Ort")
+        jerseys = st.text_input("Jerseys")
+        bus = st.text_input("Bus-Plan")
+        eq = st.text_input("Equipment")
+        ok = st.form_submit_button("Speichern")
+    if ok:
+        supa().table("gameday").insert({
+            "meet_at":meet,"location":loc,"jerseys":jerseys,"busplan":bus,"equipment":eq,
+            "created_by":prof["id"],"visibility":"team"
+        }).execute()
+        st.success("Gameday gespeichert."); st.experimental_rerun()
