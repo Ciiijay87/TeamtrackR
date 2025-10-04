@@ -3,7 +3,7 @@ from supabase import create_client, Client
 from typing import Optional
 import functools
 
-# --- Verbindung herstellen ---
+# --- Verbindung zu Supabase ---
 @functools.lru_cache(maxsize=1)
 def _client() -> Client:
     url = st.secrets["SUPABASE_URL"]
@@ -17,17 +17,21 @@ def supa() -> Client:
 def get_session():
     return st.session_state.get("session")
 
-# --- SignIn / SignUp ---
+# --- Auth: SignIn / SignUp / SignOut ---
 def sign_in(email: str, password: str):
     res = supa().auth.sign_in_with_password({"email": email, "password": password})
     st.session_state["session"] = res.session
     return res
 
 def sign_up(email: str, password: str, display_name: str):
+    # WICHTIG: Redirect enthält ?confirmed=1, damit Streamlit einen sicheren Hinweis zeigen kann
     res = supa().auth.sign_up({
         "email": email,
         "password": password,
-        "options": {"data": {"display_name": display_name}}
+        "options": {
+            "data": {"display_name": display_name},
+            "email_redirect_to": "https://teamtrackr.streamlit.app/?confirmed=1"
+        }
     })
     st.session_state["session"] = res.session
     return res
@@ -36,7 +40,7 @@ def sign_out():
     supa().auth.sign_out()
     st.session_state.pop("session", None)
 
-# --- Benutzerprofil laden ---
+# --- Profil laden ---
 def current_profile() -> Optional[dict]:
     s = get_session()
     if not s:
