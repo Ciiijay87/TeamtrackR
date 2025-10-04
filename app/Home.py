@@ -1,36 +1,53 @@
 import streamlit as st
-from _auth import sign_in, sign_up, sign_out, current_profile, is_staff, is_admin
+from _auth import sign_in, sign_up, sign_out, current_profile, is_admin
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="TeamtrackR", page_icon="🏈", layout="wide")
 
-# -----------------------------
-# Query-Params aus Supabase-Redirect erkennen (für Bestätigungs-Hinweis)
-# -----------------------------
-def _qp(name: str):
-    try:
-        q = st.experimental_get_query_params()  # stabil über Versionen
-    except Exception:
-        q = st.query_params
-    v = q.get(name)
-    if isinstance(v, list):
-        return v[0] if v else ""
-    return v or ""
+# -------------------------------------------------------------------
+# 1) JS-Brücke: Supabase leitet mit URL-Fragment (#access_token=...)
+#    Streamlit sieht das nicht. Wir wandeln es einmalig in ?confirmed=1 um.
+#    -> Keine Sicherheitswirkung, nur UI-Hinweis.
+# -------------------------------------------------------------------
+components.html("""
+<script>
+(function () {
+  try {
+    const u = new URL(window.location.href);
+    // Nur handeln, wenn ein Hash mit Supabase-Token da ist
+    if (window.location.hash && window.location.hash.includes('access_token')) {
+      // Schon markiert? dann nichts tun
+      if (!u.searchParams.get('confirmed')) {
+        u.searchParams.set('confirmed','1');       // Flag für Streamlit
+        history.replaceState(null, '', u.toString());  // URL ohne Reload umschreiben
+        // Streamlit rerun anstoßen
+        window.dispatchEvent(new Event('popstate'));
+      }
+    }
+  } catch(e) {}
+})();
+</script>
+""", height=0)
 
-confirmed_flag = False
-try:
-    if _qp("type") in ("signup", "email_change") or "confirmation_url" in (st.experimental_get_query_params() or {}):
-        confirmed_flag = True
-except Exception:
-    pass
+# -----------------------------
+# Query-Params lesen (jetzt inkl. confirmed=1)
+# -----------------------------
+def qp(name: str):
+  try:
+    q = st.experimental_get_query_params()
+  except Exception:
+    q = st.query_params
+  v = q.get(name)
+  if isinstance(v, list):
+    return v[0] if v else ""
+  return v or ""
 
-# -----------------------------
-# Flash-Meldungen über Reruns
-# -----------------------------
+# Flash via Session
 flash = st.session_state.pop("flash", None)
 
-if confirmed_flag:
-    st.success("✅ E-Mail bestätigt. Jetzt muss dich Headcoach/Team Manager freischalten.")
-
+# Erfolgsmeldungen
+if qp("confirmed") == "1":
+    st.success("✅ E-Mail bestätigt. Jetzt noch Freischaltung durch Headcoach/Team Manager abwarten.")
 if flash == "signup_ok":
     st.info("✅ Registrierung erfolgreich. Prüfe deine E-Mails und bestätige deine Adresse.")
 elif flash == "login_ok":
@@ -41,11 +58,11 @@ if "lang" not in st.session_state:
     st.session_state["lang"] = "DE"
 st.session_state["lang"] = st.sidebar.selectbox("🌐 Sprache / Language", ["DE", "EN"], index=0)
 
-# Aktuelles Profil laden
+# Aktuelles Profil
 prof = current_profile()
 
 # =========================================================
-# 1) Nicht eingeloggt → Login/Sign-up (Formulare)
+# Nicht eingeloggt → Login / Sign up
 # =========================================================
 if not prof:
     st.title("🏈 TeamtrackR")
@@ -87,7 +104,7 @@ if not prof:
     st.stop()
 
 # =========================================================
-# 2) Eingeloggt: Status anzeigen
+# Eingeloggt: Status
 # =========================================================
 st.info(f"Willkommen, {prof.get('display_name','')}  •  Rolle: {prof.get('role','?')}  •  Freigabe: {'✅' if prof.get('approved') else '⏳'}")
 
@@ -98,7 +115,7 @@ if not prof.get("approved", False):
     st.stop()
 
 # =========================================================
-# 3) Eingeloggt & freigeschaltet → Kachel-Navigation
+# Freigeschaltet → Kacheln
 # =========================================================
 st.title("🏈 TeamtrackR")
 
