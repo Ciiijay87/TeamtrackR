@@ -1,14 +1,38 @@
 import streamlit as st
-from _auth import sign_in, sign_up, sign_out, current_profile, is_staff
+from _auth import sign_in, sign_up, sign_out, current_profile, is_staff, is_admin
 
 st.set_page_config(page_title="TeamtrackR", page_icon="🏈", layout="wide")
 
 # -----------------------------
-# Flash-Nachrichten (über Rerun)
+# Query-Params aus Supabase-Redirect erkennen (für Bestätigungs-Hinweis)
+# -----------------------------
+def _qp(name: str):
+    try:
+        q = st.experimental_get_query_params()  # stabil über Versionen
+    except Exception:
+        q = st.query_params
+    v = q.get(name)
+    if isinstance(v, list):
+        return v[0] if v else ""
+    return v or ""
+
+confirmed_flag = False
+try:
+    if _qp("type") in ("signup", "email_change") or "confirmation_url" in (st.experimental_get_query_params() or {}):
+        confirmed_flag = True
+except Exception:
+    pass
+
+# -----------------------------
+# Flash-Meldungen über Reruns
 # -----------------------------
 flash = st.session_state.pop("flash", None)
+
+if confirmed_flag:
+    st.success("✅ E-Mail bestätigt. Jetzt muss dich Headcoach/Team Manager freischalten.")
+
 if flash == "signup_ok":
-    st.info("✅ Registrierung erfolgreich. Dein Zugang muss vom Headcoach/Team Manager freigeschaltet werden.")
+    st.info("✅ Registrierung erfolgreich. Prüfe deine E-Mails und bestätige deine Adresse.")
 elif flash == "login_ok":
     st.success("✅ Erfolgreich eingeloggt.")
 
@@ -17,18 +41,18 @@ if "lang" not in st.session_state:
     st.session_state["lang"] = "DE"
 st.session_state["lang"] = st.sidebar.selectbox("🌐 Sprache / Language", ["DE", "EN"], index=0)
 
-# Aktuelles Profil prüfen
+# Aktuelles Profil laden
 prof = current_profile()
 
 # =========================================================
-# 1) Falls NICHT eingeloggt: Login/Sign-up anzeigen (Form)
+# 1) Nicht eingeloggt → Login/Sign-up (Formulare)
 # =========================================================
 if not prof:
     st.title("🏈 TeamtrackR")
 
     col1, col2 = st.columns(2)
 
-    # --------- LOGIN (Form verhindert Doppel-Submit) ---------
+    # Login
     with col1:
         st.subheader("Login")
         with st.form("login_form", clear_on_submit=False):
@@ -43,7 +67,7 @@ if not prof:
             except Exception as e:
                 st.error(f"Login fehlgeschlagen: {e}")
 
-    # --------- SIGN-UP (Form + Flash + kein Doppel-Submit) ---------
+    # Sign up
     with col2:
         st.subheader("Sign up")
         with st.form("signup_form", clear_on_submit=False):
@@ -54,29 +78,27 @@ if not prof:
         if ok2:
             try:
                 _ = sign_up(email_su, password_su, display_name)
-                # Hinweis: Bei Supabase ist nach sign_up meist KEINE Session aktiv.
                 st.session_state["flash"] = "signup_ok"
                 st.rerun()
             except Exception as e:
                 st.error(f"Signup fehlgeschlagen: {e}")
 
-    st.caption("Hinweis: Nach der Registrierung muss der Headcoach/Team Manager deinen Zugang freischalten.")
+    st.caption("Hinweis: Nach der Registrierung E-Mail bestätigen. Danach schaltet dich der Headcoach/Team Manager frei.")
     st.stop()
 
 # =========================================================
-# 2) Eingeloggt, aber noch NICHT freigeschaltet
+# 2) Eingeloggt: Status anzeigen
 # =========================================================
 st.info(f"Willkommen, {prof.get('display_name','')}  •  Rolle: {prof.get('role','?')}  •  Freigabe: {'✅' if prof.get('approved') else '⏳'}")
 
 if not prof.get("approved", False):
-    st.warning("Dein Zugang ist erstellt, aber **noch nicht freigeschaltet**. Bitte den Headcoach oder Team Manager informieren.")
+    st.warning("Dein Zugang ist erstellt und die E-Mail ist bestätigt – **aber du bist noch nicht freigeschaltet**. Bitte HC oder TM informieren.")
     if st.button("Logout"):
         sign_out()
-        st.rerun()
     st.stop()
 
 # =========================================================
-# 3) Eingeloggt & freigeschaltet → Kacheln
+# 3) Eingeloggt & freigeschaltet → Kachel-Navigation
 # =========================================================
 st.title("🏈 TeamtrackR")
 
@@ -93,7 +115,7 @@ tiles = [
     ("🏟️ Gameday", "9_Gameday.py"),
     ("💬 Forum", "10_Forum.py"),
     ("📈 Reports", "11_Reports.py"),
-    ("🛠️ Admin", "12_Admin.py" if is_staff(prof) else None),
+    ("🛠️ Admin", "12_Admin.py" if is_admin(prof) else None),
 ]
 
 i = 0
@@ -107,6 +129,5 @@ for label, page in tiles:
 st.divider()
 if st.button("Logout"):
     sign_out()
-    st.rerun()
 
 st.caption("TeamtrackR © 2025 – Internal Team Management Prototype")
