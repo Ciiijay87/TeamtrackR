@@ -1,25 +1,52 @@
-from typing import List
-from ._auth import supa
+from typing import List, Dict, Optional
+from _auth import supa
 
-def list_units() -> List[str]:
-    return ["OL","WR","RB","TE","QB","DL","DB","LB","K","P"]
+# ---------- Events ----------
+def get_upcoming_events(limit: int = 5) -> List[Dict]:
+    q = supa().table("events").select("*").order("start_time", desc=False).limit(limit).execute()
+    return q.data or []
 
-def get_events(limit=50):
-    return supa().table("events").select("*").order("starts_at", desc=False).limit(limit).execute().data
+def create_event(title: str, start_time: str, end_time: Optional[str], location: str, visibility: str, notes: str) -> None:
+    supa().table("events").insert({
+        "title": title,
+        "start_time": start_time,
+        "end_time": end_time,
+        "location": location,
+        "visibility": visibility,  # 'team' oder 'staff'
+        "notes": notes
+    }).execute()
 
-def get_roster():
-    return supa().table("roster").select("*").order("number", desc=False).execute().data
+# ---------- Roster ----------
+def get_roster(active_only: bool = True) -> List[Dict]:
+    q = supa().table("roster").select("id, first_name, last_name, position, number, status").execute()
+    rows = q.data or []
+    if active_only:
+        rows = [r for r in rows if (r.get("status") or "").lower() in ("fit", "active", "")]
+    return rows
 
-def set_attendance(event_id: int, player_id: str, status: str, checked_by: str):
+# ---------- Attendance ----------
+ATTENDANCE_VALUES = ["present", "late", "excused", "absent"]
+
+def get_attendance(event_id: str) -> Dict[str, str]:
+    q = supa().table("attendance").select("player_id, status").eq("event_id", event_id).execute()
+    rows = q.data or []
+    return {r["player_id"]: r["status"] for r in rows}
+
+def set_attendance(event_id: str, player_id: str, status: str) -> None:
+    if status not in ATTENDANCE_VALUES:
+        status = "absent"
     supa().table("attendance").upsert({
         "event_id": event_id,
         "player_id": player_id,
-        "status": status,
-        "checked_by": checked_by
-    }).execute()
+        "status": status
+    }, on_conflict="event_id,player_id").execute()
 
-def list_attendance(event_id: int):
-    return supa().table("attendance").select("*").eq("event_id", event_id).execute().data
+# ---------- Tasks ----------
+def count_open_tasks() -> int:
+    q = supa().table("tasks").select("id,status").neq("status", "done").execute()
+    return len(q.data or [])
 
-def list_categories():
-    return supa().table("event_categories").select("*").order("name").execute().data
+# ---------- Announcements ----------
+def get_latest_announcements(limit: int = 3) -> List[Dict]:
+    q = supa().table("announcements").select("*").order("created_at", desc=True).limit(limit).execute()
+    return q.data or []
