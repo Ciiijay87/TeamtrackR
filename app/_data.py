@@ -1,52 +1,92 @@
-from typing import List, Dict, Optional
-from _auth import supa
+import functools
+from typing import List, Optional, Dict, Any
+import streamlit as st
+from supabase import create_client, Client
+from datetime import datetime
 
-# ---------- Events ----------
-def get_upcoming_events(limit: int = 5) -> List[Dict]:
-    q = supa().table("events").select("*").order("start_time", desc=False).limit(limit).execute()
-    return q.data or []
+# ---------- SUPABASE ----------
+@functools.lru_cache(maxsize=1)
+def supa() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_ANON_KEY"]
+    return create_client(url, key)
 
-def create_event(title: str, start_time: str, end_time: Optional[str], location: str, visibility: str, notes: str) -> None:
-    supa().table("events").insert({
-        "title": title,
-        "start_time": start_time,
-        "end_time": end_time,
-        "location": location,
-        "visibility": visibility,  # 'team' oder 'staff'
-        "notes": notes
-    }).execute()
+# ---------- EVENTS ----------
+def list_events(limit: int = 50) -> List[Dict[str, Any]]:
+    res = supa().table("events").select("*").order("start", desc=False).limit(limit).execute()
+    return res.data or []
 
-# ---------- Roster ----------
-def get_roster(active_only: bool = True) -> List[Dict]:
-    q = supa().table("roster").select("id, first_name, last_name, position, number, status").execute()
-    rows = q.data or []
-    if active_only:
-        rows = [r for r in rows if (r.get("status") or "").lower() in ("fit", "active", "")]
+def create_event(payload: Dict[str, Any]) -> Dict[str, Any]:
+    res = supa().table("events").insert(payload).select("*").single().execute()
+    return res.data
+
+def update_event(event_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    res = supa().table("events").update(payload).eq("id", event_id).select("*").single().execute()
+    return res.data
+
+def delete_event(event_id: str) -> None:
+    supa().table("events").delete().eq("id", event_id).execute()
+
+# ---------- ROSTER ----------
+# Falls ihr im Roster keine "unit"-Spalte habt, mappen wir sie grob aus "position".
+_POS2UNIT = {
+    "QB":"Offense","RB":"Offense","WR":"Offense","TE":"Offense","OL":"Offense","C":"Offense","G":"Offense","T":"Offense",
+    "DL":"Defense","DE":"Defense","DT":"Defense","NT":"Defense","EDGE":"Defense","LB":"Defense","ILB":"Defense","OLB":"Defense",
+    "DB":"Defense","CB":"Defense","LCB":"Defense","RCB":"Defense","S":"Defense","SS":"Defense","FS":"Defense","WS":"Defense",
+    "K":"ST","P":"ST","LS":"ST","KR":"ST","PR":"ST"
+}
+
+def _infer_unit(position: Optional[str]) -> str:
+    if not position:
+        return "Offense"
+    p = position.strip().upper()
+    return _POS2UNIT.get(p, "Offense")
+
+def list_players(unit_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    # Wir holen Kernfelder; existieren manche nicht, liefert Supabase einfach None
+    fields = "id, first_name, last_name, number, position, status"
+    res = supa().table("roster").select(fields).order("last_name").order("first_name").execute()
+    rows = res.data or []
+    for r in rows:
+        r["unit"] = r.get("unit") or _infer_unit(r.get("position"))
+        r["display"] = f'{r.get("number") or ""} {r.get("first_name","")} {r.get("last_name","")}'.strip()
+    if unit_filter:
+        rows = [r for r in rows if r["unit"] == unit_filter]
     return rows
 
-# ---------- Attendance ----------
-ATTENDANCE_VALUES = ["present", "late", "excused", "absent"]
+# ---------- ATTENDANCE ----------
+# Status & Bewertung
+ATTENDANCE_WEIGHTS = {"da":100, "zu_spaet":90, "entschuldigt":20, "fehlt":0}
 
-def get_attendance(event_id: str) -> Dict[str, str]:
-    q = supa().table("attendance").select("player_id, status").eq("event_id", event_id).execute()
-    rows = q.data or []
-    return {r["player_id"]: r["status"] for r in rows}
+def get_attendance(event_id: str) -> Dict[str, Dict[str, Any]]:
+    """liefert Dict[player_id] -> {status, updated_at}"""
+    res = supa().table("attendance").select("player_id,status,updated_at").eq("event_id", event_id).execute()
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in (res.data or []):
+        out[row["player_id"]] = {"status": row["status"], "updated_at": row.get("updated_at")}
+    return out
 
 def set_attendance(event_id: str, player_id: str, status: str) -> None:
-    if status not in ATTENDANCE_VALUES:
-        status = "absent"
-    supa().table("attendance").upsert({
-        "event_id": event_id,
-        "player_id": player_id,
-        "status": status
-    }, on_conflict="event_id,player_id").execute()
+    # Upsert per (event_id, player_id)
+    payload = {"event_id": event_id, "player_id": player_id, "status": status}
+    supa().table("attendance").upsert(payload, on_conflict="event_id,player_id").execute()
 
-# ---------- Tasks ----------
-def count_open_tasks() -> int:
-    q = supa().table("tasks").select("id,status").neq("status", "done").execute()
-    return len(q.data or [])
+def attendance_summary(event_id: str) -> Dict[str, Any]:
+    data = get_attendance(event_id)
+    total = len(data)
+    by_status = {"da":0,"zu_spaet":0,"entschuldigt":0,"fehlt":0}
+    score = 0
+    for v in data.values():
+        s = v.get("status","fehlt")
+        if s not in by_status: by_status[s] = 0
+        by_status[s] += 1
+        score += ATTENDANCE_WEIGHTS.get(s, 0)
+    avg = round(score / max(1,total), 1) if total else 0
+    return {"total": total, "by_status": by_status, "avg_score": avg}
 
-# ---------- Announcements ----------
-def get_latest_announcements(limit: int = 3) -> List[Dict]:
-    q = supa().table("announcements").select("*").order("created_at", desc=True).limit(limit).execute()
-    return q.data or []
+# ---------- Kleine Helfer ----------
+def fmt_dt(dt: Optional[str]) -> str:
+    try:
+        return datetime.fromisoformat(dt.replace("Z","+00:00")).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return dt or ""
