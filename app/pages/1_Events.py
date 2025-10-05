@@ -1,60 +1,76 @@
 import streamlit as st
-from _auth import require_login, is_staff, supa
-from _data import list_categories
+from datetime import datetime, timedelta
+from _data import list_events, create_event, update_event, delete_event, fmt_dt
 
-prof = require_login()
-st.title("Termine / Events")
+st.set_page_config(page_title="Kalender", page_icon="📅", layout="wide")
+st.title("📅 Kalender")
 
-cats = list_categories()
-cat_names = [c["name"] for c in cats]
-tab_list, tab_new, tab_cat = st.tabs(["Übersicht", "Neu", "Kategorien"])
-
-with tab_list:
-    res = supa().table("events").select("*, event_categories(name)").order("starts_at").execute()
-    events = res.data
-    for e in events:
-        vis = "Team" if e["visibility"]=="team" else "Staff"
-        st.write(f"**{e['title']}** — {e['starts_at']} → {e['ends_at']} @ {e.get('location','')}")
-        st.caption(f"{vis} • {e.get('description','')}")
-        if is_staff(prof):
-            if st.button(f"Delete #{e['id']}", key=f"del{e['id']}"):
-                supa().table("events").delete().eq("id", e["id"]).execute()
+# --------- Event-Liste (links) ---------
+with st.sidebar:
+    st.header("Neues Event")
+    title = st.text_input("Titel")
+    colA, colB = st.columns(2)
+    with colA:
+        start = st.datetime_input("Start", value=datetime.now()+timedelta(hours=1))
+    with colB:
+        end = st.datetime_input("Ende", value=datetime.now()+timedelta(hours=2))
+    location = st.text_input("Ort", value="")
+    notes = st.text_area("Beschreibung", value="", height=80)
+    if st.button("Event anlegen"):
+        if not title:
+            st.error("Titel fehlt.")
+        else:
+            payload = {
+                "title": title,
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "location": location,
+                "notes": notes
+            }
+            try:
+                create_event(payload)
+                st.success("Event angelegt.")
                 st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Fehler beim Anlegen: {e}")
 
-with tab_new:
-    if not is_staff(prof):
-        st.info("Nur Staff/Coaches können Termine erstellen.")
-    else:
-        title = st.text_input("Titel")
-        desc = st.text_area("Beschreibung")
-        col1, col2 = st.columns(2)
-        starts = col1.text_input("Start (YYYY-MM-DD HH:MM)")
-        ends = col2.text_input("Ende (YYYY-MM-DD HH:MM)")
-        loc = st.text_input("Ort")
-        visibility = st.selectbox("Sichtbarkeit", ["team","staff"])
-        cat = st.selectbox("Kategorie", cat_names) if cat_names else st.text_input("Kategorie (neu)")
-        reminders = st.multiselect("Erinnerungen", ["48h","24h","2h","1h"], ["24h"])
-        if st.button("Speichern"):
-            cat_id = None
-            if cat and cat not in cat_names:
-                cat_row = supa().table("event_categories").insert({"name": cat}).execute().data[0]
-                cat_id = cat_row["id"]
-            else:
-                for c in cats:
-                    if c["name"] == cat:
-                        cat_id = c["id"]
-            supa().table("events").insert({
-                "title": title, "description": desc,
-                "starts_at": starts, "ends_at": ends,
-                "location": loc, "visibility": visibility,
-                "category_id": cat_id, "reminders": reminders, "created_by": prof["id"]
-            }).execute()
-            st.success("Termin gespeichert.")
-            st.experimental_rerun()
+events = list_events(200)
+if not events:
+    st.info("Noch keine Termine vorhanden. Lege links ein neues Event an.")
+else:
+    st.subheader("Termine")
+    for ev in events:
+        with st.expander(f'{ev.get("title","(ohne Titel)")} – {fmt_dt(ev.get("start"))}'):
+            st.write(f"**Start:** {fmt_dt(ev.get('start'))}")
+            st.write(f"**Ende:** {fmt_dt(ev.get('end'))}")
+            if ev.get("location"): st.write(f"**Ort:** {ev['location']}")
+            if ev.get("notes"): st.write(ev["notes"])
 
-with tab_cat:
-    if is_staff(prof):
-        newc = st.text_input("Neue Kategorie")
-        if st.button("Anlegen") and newc:
-            supa().table("event_categories").insert({"name": newc}).execute()
-            st.experimental_rerun()
+            # Edit
+            with st.popover("✏️ Bearbeiten"):
+                nt = st.text_input("Titel", value=ev.get("title",""), key=f"t_{ev['id']}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    ns = st.datetime_input("Start", value=datetime.fromisoformat(ev["start"].replace("Z","+00:00")), key=f"s_{ev['id']}")
+                with col2:
+                    ne = st.datetime_input("Ende", value=datetime.fromisoformat(ev["end"].replace("Z","+00:00")), key=f"e_{ev['id']}")
+                nl = st.text_input("Ort", value=ev.get("location",""), key=f"l_{ev['id']}")
+                nn = st.text_area("Beschreibung", value=ev.get("notes",""), key=f"n_{ev['id']}")
+                if st.button("Speichern", key=f"u_{ev['id']}"):
+                    try:
+                        update_event(ev["id"], {
+                            "title": nt, "start": ns.isoformat(), "end": ne.isoformat(),
+                            "location": nl, "notes": nn
+                        })
+                        st.success("Gespeichert.")
+                        st.experimental_rerun()
+                    except Exception as e:
+                        st.error(f"Fehler: {e}")
+            # Delete
+            if st.button("🗑️ Löschen", key=f"d_{ev['id']}"):
+                try:
+                    delete_event(ev["id"])
+                    st.success("Gelöscht.")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Fehler: {e}")
