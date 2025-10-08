@@ -1,42 +1,56 @@
+# app/Home.py
 import streamlit as st
-from _auth import current_profile, require_login
+from _auth import sign_in, sign_up, sign_out, get_session, current_profile
 from _i18n import t
 
-st.set_page_config(page_title="TeamtrackR", page_icon="🏈", layout="wide")
+st.set_page_config(page_title="TeamtrackR", layout="wide")
 
-# ---- Auth check ----
-prof = require_login()
-st.session_state["profile"] = prof
+lang = st.session_state.get("lang", "DE")
+left, right = st.columns([1,1])
 
-# Infozeile
-role = prof.get("role", "player")
-ok = "✅" if prof.get("approved") else "⏳"
-st.success(f"Willkommen, {prof.get('display_name')}; Rolle: {role}; Freigabe: {ok}")
+st.markdown(f"### {t('home.title', lang)}")
 
-# Header
-left, right = st.columns([1, 1])
+sess = get_session()
+prof = current_profile()
+
 with left:
-    st.markdown("<h1 style='margin-bottom:0'>TeamtrackR</h1>", unsafe_allow_html=True)
-    st.caption("Schnelle Übersicht")
+    st.subheader("Login")
+    email = st.text_input("E-Mail", key="login_email")
+    pwd = st.text_input("Passwort", type="password", key="login_pwd")
+    if st.button("Login"):
+        ok = sign_in(email, pwd)
+        if ok:
+            st.success("Eingeloggt.")
+            st.rerun()
+        else:
+            st.error("Login fehlgeschlagen (E-Mail bestätigt?).")
 
-# Kacheln (nutzen st.page_link – KEIN use_container_width!)
+with right:
+    st.subheader("Sign up")
+    dn = st.text_input("Anzeigename / Display name", key="su_dn")
+    em = st.text_input("E-Mail", key="su_email")
+    pw = st.text_input("Passwort", type="password", key="su_pwd")
+    if st.button("Registrieren"):
+        if dn and em and pw:
+            if sign_up(em, pw, dn):
+                st.success("Registriert. Bitte E-Mail bestätigen; HC/TM schalten dich danach frei.")
+            else:
+                st.error("Signup fehlgeschlagen.")
+        else:
+            st.warning("Bitte alle Felder ausfüllen.")
+
+st.divider()
+
+# Quick Links (robust, ohne Icon-Parameter)
 c1, c2, c3 = st.columns(3)
-
 with c1:
-    st.page_link("pages/1_Events.py", label="📅  Termine / Events")
+    st.page_link("pages/1_Events.py", label=t("home.subtitle.events", lang))
 with c2:
-    st.page_link("pages/2_Attendance.py", label="✅  Anwesenheit")
+    st.page_link("pages/2_Attendance.py", label=t("home.subtitle.attendance", lang))
 with c3:
-    st.page_link("pages/3_Tasks.py", label="🧾  Tasks / To-Dos")
+    st.page_link("pages/3_tasks.py", label=t("home.subtitle.tasks", lang))
 
-# Mini-Widgets
-st.markdown("---")
-st.subheader("Schnellzugriff")
-
-cc1, cc2 = st.columns(2)
-with cc1:
-    st.page_link("pages/6_Roster.py", label="👥 Roster öffnen")
-    st.page_link("pages/4_Files.py", label="📁 Dateien")
-with cc2:
-    st.page_link("pages/11_Reports.py", label="📊 Reports")
-    st.page_link("pages/12_Admin.py", label="🛠️ Admin")
+if prof:
+    st.info(f"Willkommen, {prof.get('display_name', '')} · Rolle: {prof.get('role')} · Freigabe: {'✅' if prof.get('approved') else '⏳'}")
+    if st.button("Logout"):
+        sign_out()
