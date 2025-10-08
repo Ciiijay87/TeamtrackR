@@ -1,67 +1,91 @@
 import streamlit as st
-from _data import list_events, list_players, get_attendance, set_attendance, attendance_summary
+from datetime import datetime
+from _auth import require_login, supa, is_staff
+from _i18n import t
 
 st.set_page_config(page_title="Anwesenheit", page_icon="✅", layout="wide")
-st.title("✅ Anwesenheit")
+prof = require_login()
+staff = is_staff(prof)
 
-# --- Event auswählen ---
-events = list_events(200)
-event_choices = {f'{e.get("title","(ohne Titel)")} – {e.get("start","")[:16]}': e["id"] for e in events}
-if not event_choices:
-    st.info("Kein Event vorhanden. Lege zuerst im Kalender ein Event an.")
+st.markdown("## ✅ Anwesenheit")
+
+# Letztes/nächstes Event holen (einfach: das nächste in der Zukunft, sonst letztes)
+def get_target_event():
+    try:
+        # nächstes in Zukunft
+        r = supa().table("events").select("*").gte("start", datetime.utcnow().isoformat()) \
+            .order("start", desc=False).limit(1).execute()
+        if r.data:
+            return r.data[0]
+        # sonst letztes Vergangenes
+        r = supa().table("events").select("*").lt("start", datetime.utcnow().isoformat()) \
+            .order("start", desc=True).limit(1).execute()
+        if r.data:
+            return r.data[0]
+    except Exception:
+        pass
+    return None
+
+event = get_target_event()
+if not event:
+    st.info("Kein Event gefunden. Lege im Kalender eines an.")
     st.stop()
 
-selected_label = st.selectbox("Event wählen", options=list(event_choices.keys()))
-event_id = event_choices[selected_label]
+st.write(f"**Event:** {event['title']} – {event['start']} @ {event.get('place','')}")
 
-# --- Unit-Filter ---
-unit = st.selectbox("Unit", options=["Alle","Offense","Defense","ST"], index=0)
+# Roster laden
+try:
+    res_roster = supa().table("roster").select("id, first_name, last_name, position").order("last_name").execute()
+    roster = res_roster.data or []
+except Exception as e:
+    st.error("Konnte Roster nicht laden (Policy/Schema?).")
+    st.exception(e)
+    st.stop()
 
-# --- Roster laden ---
-players = list_players(None if unit=="Alle" else unit)
-att = get_attendance(event_id)
+# Bisherige Anwesenheit lesen
+att_map = {}
+try:
+    r = supa().table("attendance").select("*").eq("event_id", event["id"]).execute()
+    for row in (r.data or []):
+        att_map[row["player_id"]] = row
+except Exception:
+    pass
 
-# --- Farblogik für Status ---
-def badge(label, color):
-    st.markdown(f"""<span style="background:{color};color:white;padding:4px 8px;border-radius:8px;">{label}</span>""",
-                unsafe_allow_html=True)
+status_opts = {
+    "da": "✅ da",
+    "late": "⏰ zu spät",
+    "excused": "📝 entschuldigt",
+    "absent": "❌ fehlt",
+}
 
-st.subheader("Check-in")
-cols = st.columns([2,1,1,1,1])
-cols[0].markdown("**Spieler**")
-cols[1].markdown("**Da**")
-cols[2].markdown("**Zu spät**")
-cols[3].markdown("**Entschuldigt**")
-cols[4].markdown("**Fehlt**")
-
-for p in players:
-    s = att.get(p["id"], {}).get("status")
-    with st.container(border=True):
-        c0, c1, c2, c3, c4 = st.columns([2,1,1,1,1])
-        c0.write(p["display"])
-        if c1.button("🟩", key=f"da_{p['id']}"):
-            set_attendance(event_id, p["id"], "da")
-            st.experimental_rerun()
-        if c2.button("🟧", key=f"zs_{p['id']}"):
-            set_attendance(event_id, p["id"], "zu_spaet")
-            st.experimental_rerun()
-        if c3.button("🟦", key=f"en_{p['id']}"):
-            set_attendance(event_id, p["id"], "entschuldigt")
-            st.experimental_rerun()
-        if c4.button("🟥", key=f"fe_{p['id']}"):
-            set_attendance(event_id, p["id"], "fehlt")
-            st.experimental_rerun()
-        if s:
-            c0.caption(f"Aktuell: {s}")
-
-# --- Zusammenfassung ---
-st.divider()
-st.subheader("Auswertung (Event)")
-sumy = attendance_summary(event_id)
-cA, cB, cC, cD, cE = st.columns(5)
-cA.metric("Erfasst", sumy["total"])
-cB.metric("Da", sumy["by_status"].get("da",0))
-cC.metric("Zu spät", sumy["by_status"].get("zu_spaet",0))
-cD.metric("Entschuldigt", sumy["by_status"].get("entschuldigt",0))
-cE.metric("Fehlt", sumy["by_status"].get("fehlt",0))
-st.caption("Score-Basis: Da=100, Zu spät=90, Entschuldigt=20, Fehlt=0")
+if staff:
+    st.markdown("### Check-in")
+    for p in roster:
+        pid = p["id"]
+        name = f"{p.get('first_name','')} {p.get('last_name','')}".strip()
+        old = att_map.get(pid, {})
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.write(name, f"({p.get('position','')})")
+        with col2:
+            new_status = st.selectbox(
+                "Status", list(status_opts.keys()),
+                index=list(status_opts.keys()).index(old.get("status", "absent")),
+                key=f"status_{pid}",
+                format_func=lambda k: status_opts[k]
+            )
+        # Speichern pro Zeile
+        if st.button("Speichern", key=f"save_{pid}"):
+            try:
+                supa().table("attendance").upsert({
+                    "event_id": event["id"],
+                    "player_id": pid,
+                    "status": new_status
+                }).execute()
+                st.success("Gespeichert.")
+                st.rerun()
+            except Exception as e:
+                st.error("Konnte Status nicht speichern.")
+                st.exception(e)
+else:
+    st.info("Nur Staff kann Anwesenheit eintragen.")
