@@ -1,61 +1,47 @@
+# app/pages/1_Events.py
 import streamlit as st
-from datetime import datetime, date, time, timedelta
-from _auth import require_login, supa, is_staff
-from _i18n import t
+from datetime import datetime, timedelta, time
+from _auth import require_login
+from _data import create_event, list_events
 
-st.set_page_config(page_title="Kalender", page_icon="📅", layout="wide")
+st.set_page_config(page_title="Kalender", layout="wide")
 prof = require_login()
 
-st.markdown("## 📅 Kalender")
+st.title("Kalender")
 
-is_staff_user = is_staff(prof)
+with st.form("new_event"):
+    st.subheader("Neues Event")
+    title = st.text_input("Titel")
+    kind = st.selectbox("Typ", ["training", "game", "meeting", "travel", "tryout", "other"])
+    visibility = st.selectbox("Sichtbarkeit", ["team", "staff"])
+    notes = st.text_area("Beschreibung / Notizen", height=100)
 
-# ---------- Formular "Neues Event" ----------
-with st.sidebar:
-    st.markdown("### Neues Event")
-    title = st.text_input("Titel", "")
-    d = st.date_input("Datum", value=date.today())
+    d = st.date_input("Datum", value=datetime.now().date())
     start_t = st.time_input("Start", value=(datetime.now()+timedelta(hours=1)).time())
     end_t = st.time_input("Ende", value=(datetime.now()+timedelta(hours=2)).time())
-    place = st.text_input("Ort", "")
-    vis = st.selectbox("Sichtbarkeit", ["team", "staff"])  # simpel
-    notes = st.text_area("Beschreibung", "")
 
-    if is_staff_user and st.button("Speichern"):
+    submitted = st.form_submit_button("Speichern")
+    if submitted:
         start = datetime.combine(d, start_t)
         end = datetime.combine(d, end_t)
         try:
-            supa().table("events").insert({
-                "title": title.strip(),
-                "start": start.isoformat(),
-                "end": end.isoformat(),
-                "place": place.strip(),
-                "visibility": vis,
-                "notes": notes.strip()
-            }).execute()
+            create_event(title, start, end, kind, visibility, notes)
             st.success("Event gespeichert.")
-            st.rerun()
         except Exception as e:
-            st.error("Konnte Event nicht speichern.")
-            st.exception(e)
+            st.error(f"Fehler beim Speichern: {e}")
 
-# ---------- Liste der nächsten Events ----------
-st.markdown("### Nächste Termine")
-try:
-    res = supa().table("events").select("*").order("start", desc=False).limit(50).execute()
-    rows = res.data or []
-    if not rows:
-        st.info("Noch keine Events angelegt.")
-    else:
-        for ev in rows:
-            with st.container(border=True):
-                st.markdown(f"**{ev.get('title','(ohne Titel)')}**")
-                st.caption(
-                    f"{ev.get('start','?')} – {ev.get('end','?')} | {ev.get('place','')}"
-                    f" | Sichtbarkeit: {ev.get('visibility','team')}"
-                )
-                if ev.get("notes"):
-                    st.write(ev["notes"])
-except Exception as e:
-    st.error("Konnte Events nicht laden (Policy/Schema?).")
-    st.exception(e)
+st.divider()
+st.subheader("Alle Events (nächste / letzte)")
+
+events = list_events(200)
+if not events:
+    st.info("Noch keine Events.")
+else:
+    from pandas import DataFrame, to_datetime
+    import pandas as pd
+    df = DataFrame(events)
+    for col in ("start","end"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce").dt.tz_localize(None)
+    show = df[["title","kind","visibility","start","end","notes"]]
+    st.dataframe(show, use_container_width=True, hide_index=True)
