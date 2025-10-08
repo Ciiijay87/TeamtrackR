@@ -1,26 +1,51 @@
 import streamlit as st
-from _auth import require_login, is_staff, supa
+from datetime import datetime, timedelta
+from _auth import require_login, supa, is_staff
+
+st.set_page_config(page_title="Tasks", page_icon="🧾", layout="wide")
 prof = require_login()
-st.title("Tasks")
+staff = is_staff(prof)
 
-tab_list, tab_new = st.tabs(["Liste","Neu"])
+st.markdown("## 🧾 Tasks")
 
-with tab_list:
-    tasks = supa().table("tasks").select("*").order("due_at").execute().data
-    for t in tasks:
-        scope = t["scope"]
-        if scope=="staff" and not is_staff(prof): 
-            continue
-        st.write(f"**{t['title']}** — {t.get('due_at','')} — {t['status']} — [{scope}]")
+# Formular
+with st.container(border=True):
+    st.markdown("### Neu")
+    title = st.text_input("Titel")
+    desc = st.text_area("Beschreibung")
+    due_date = st.date_input("Fällig (YYYY-MM-DD)", value=datetime.utcnow().date() + timedelta(days=1))
+    due_time = st.time_input("Uhrzeit", value=datetime.utcnow().time().replace(second=0, microsecond=0))
+    area = st.selectbox("Bereich", ["team", "staff"])
 
-with tab_new:
-    if is_staff(prof):
-        title = st.text_input("Titel")
-        desc = st.text_area("Beschreibung")
-        due = st.text_input("Fällig (YYYY-MM-DD HH:MM)")
-        scope = st.selectbox("Bereich", ["team","staff"])
-        if st.button("Speichern"):
-            supa().table("tasks").insert({"title":title,"description":desc,"due_at":due,"scope":scope,"created_by":prof["id"]}).execute()
-            st.success("Task gespeichert."); st.experimental_rerun()
+    if staff and st.button("Speichern"):
+        try:
+            dt = datetime.combine(due_date, due_time)
+            supa().table("tasks").insert({
+                "title": title.strip(),
+                "description": desc.strip(),
+                "due": dt.isoformat(),
+                "area": area
+            }).execute()
+            st.success("Task gespeichert.")
+            st.rerun()   # <— wichtig: ersetzt experimental_rerun
+        except Exception as e:
+            st.error("Konnte Task nicht speichern.")
+            st.exception(e)
+
+# Liste
+st.markdown("### Offene Tasks")
+try:
+    r = supa().table("tasks").select("*").order("due", desc=False).limit(200).execute()
+    rows = r.data or []
+    if not rows:
+        st.info("Keine Tasks vorhanden.")
     else:
-        st.info("Nur Staff kann Tasks erstellen.")
+        for tsk in rows:
+            with st.container(border=True):
+                st.markdown(f"**{tsk.get('title','(ohne Titel)')}** – {tsk.get('area','')}")
+                st.caption(f"Fällig: {tsk.get('due','?')}")
+                if tsk.get("description"):
+                    st.write(tsk["description"])
+except Exception as e:
+    st.error("Konnte Tasks nicht laden.")
+    st.exception(e)
