@@ -1,77 +1,92 @@
-# app/pages/2_Attendance.py
 import streamlit as st
-import pandas as pd
-from _auth import require_login
-from _data import list_events, roster_df, load_attendance, save_attendance, ATT_WEIGHTS
+from _auth import require_login, current_profile, is_staff, supa
+from datetime import date
 
-st.set_page_config(page_title="Anwesenheit", layout="wide")
-prof = require_login()
+st.set_page_config(page_title="Anwesenheit")
+st.header("✅ Anwesenheit")
 
-st.title("✅ Anwesenheit")
+sess = require_login()
+prof = current_profile()
+if not prof.get("approved"):
+    st.warning("Dein Zugang ist noch nicht freigeschaltet. Warte auf Freigabe durch HC/TM.")
+    st.stop()
 
-# Event wählen
-events = list_events(200)
+# Helper: Events laden (nur in Zukunft & letzte 60 Tage)
+def list_events(limit=200):
+    return supa().table("events").select("*").order("start", desc=False).limit(limit).execute().data or []
+
+# Helper: Anwesenheit lesen/schreiben
+def get_attendance(event_id):
+    rows = supa().table("attendance").select("*").eq("event_id", event_id).execute().data or []
+    # in ein dict: user_id -> status
+    d = {}
+    for r in rows:
+        d[r["user_id"]] = r["status"]
+    return d
+
+def save_attendance(event_id, user_id, status):
+    supa().table("attendance").upsert({
+        "event_id": event_id,
+        "user_id": user_id,
+        "status": status
+    }).execute()
+
+# Status-Farben
+def color_for(status: str) -> str:
+    if status == "present":
+        return "✅"
+    if status == "excused":
+        return "🟦"  # blau
+    if status == "late":
+        return "🟧"  # orange
+    return "🟥"      # absent/unknown
+
+# Auswahl Event
+events = list_events()
 if not events:
-    st.info("Noch keine Events – lege zuerst eins im Kalender an.")
+    st.info("Noch keine Events.")
     st.stop()
 
-ev_map = {f"{e['title']} | {e['start']}": e for e in events}
-ev_key = st.selectbox("Event", list(ev_map.keys()))
-ev = ev_map[ev_key]
-event_id = ev["id"]
+event_titles = [f"{e['title']} – {e['start']}" for e in events]
+sel = st.selectbox("Event wählen", options=list(range(len(events))),
+                   format_func=lambda i: event_titles[i])
+event = events[sel]
+st.caption(f"Event-ID: {event.get('id')}")
 
-# Roster laden
-r = roster_df()
-if r.empty:
-    st.info("Noch kein Roster eingepflegt.")
-    st.stop()
+# Roster (vereinfachte Ansicht: alle Profile)
+roster = supa().table("profiles").select("id, display_name, role").execute().data or []
 
-# Bisherige Attendance laden
-att = load_attendance(event_id)
-status_by_player = {row["player_id"]: row["status"] for _, row in att.iterrows()}
+# Anwesenheit laden
+att_map = get_attendance(event["id"])
 
-# Status-Auswahl pro Spieler
-status_options = {
-    "Anwesend (grün)": "present",
-    "Verspätet (orange)": "late",
-    "Entschuldigt (blau)": "excused",
-    "Abwesend (rot)": "absent",
-}
+st.subheader("Markieren")
+for p in roster:
+    uid = p["id"]
+    cur = att_map.get(uid, "absent")
+    col1, col2 = st.columns([3, 2])
+    with col1:
+        st.write(f"{color_for(cur)}  **{p['display_name']}**  ·  {p['role']}")
+    with col2:
+        new = st.selectbox(
+            "Status",
+            ["present", "excused", "late", "absent"],
+            index=["present","excused","late","absent"].index(cur),
+            key=f"att_{event['id']}_{uid}"
+        )
+        if new != cur:
+            save_attendance(event["id"], uid, new)
 
-st.write("Status je Spieler setzen und unten 'Speichern' klicken.")
-chosen = {}
-for _, row in r.iterrows():
-    pid = row["id"]
-    preset = status_by_player.get(pid, "absent")
-    label = f"{row.get('number','')} {row.get('first_name','')} {row.get('last_name','')}"
-    val = st.selectbox(label, list(status_options.keys()),
-                       index=list(status_options.values()).index(preset),
-                       key=f"att_{pid}")
-    chosen[pid] = status_options[val]
+st.success("Änderungen werden automatisch gespeichert.")
 
-if st.button("Speichern"):
-    try:
-        for pid, stt in chosen.items():
-            save_attendance(event_id, str(pid), stt)
-        st.success("Anwesenheit gespeichert.")
-    except Exception as e:
-        st.error(f"Fehler: {e}")
+# Summen / Ampel
+st.subheader("Übersicht")
+counts = {"present":0, "excused":0, "late":0, "absent":0}
+for v in get_attendance(event["id"]).values():
+    counts[v] = counts.get(v,0)+1
 
-# Ampel-Ansicht (Styling)
-def color_status(s):
-    m = {"present":"background-color: #d9f2d9",   # grün
-         "late":"background-color: #ffe8cc",      # orange
-         "excused":"background-color: #dbe9ff",   # blau
-         "absent":"background-color: #ffd6d6"}    # rot
-    return [m.get(v, "") for v in s]
-
-att = load_attendance(event_id)
-df = r[["id","first_name","last_name","position","number"]].copy()
-df = df.rename(columns={"id":"player_id"})
-df = df.merge(att, on="player_id", how="left")
-df["status"] = df["status"].fillna("absent")
-df["Score"] = df["status"].map(ATT_WEIGHTS).round(2)
-
-styled = df[["number","first_name","last_name","position","status","Score"]].style.apply(color_status, subset=["status"])
-st.subheader("Übersicht (Ampel)")
-st.dataframe(styled, use_container_width=True)
+st.write(
+    f"✅ Anwesend: **{counts['present']}**  ·  "
+    f"🟦 Entschuldigt: **{counts['excused']}**  ·  "
+    f"🟧 Verspätet: **{counts['late']}**  ·  "
+    f"🟥 Fehlend: **{counts['absent']}**"
+)
