@@ -1,92 +1,76 @@
 import streamlit as st
-from _auth import require_login, current_profile, is_staff, supa
-from datetime import date
+from _i18n import t, lang_selector
+from _auth import supa, current_profile
 
-st.set_page_config(page_title="Anwesenheit")
-st.header("✅ Anwesenheit")
+st.set_page_config(page_title="Attendance", page_icon="✅", layout="wide")
+lang_selector()
 
-sess = require_login()
+st.title(t("Anwesenheit", "Attendance"))
+
 prof = current_profile()
-if not prof.get("approved"):
-    st.warning("Dein Zugang ist noch nicht freigeschaltet. Warte auf Freigabe durch HC/TM.")
+if not prof:
+    st.warning(t("Bitte einloggen.", "Please log in."))
     st.stop()
 
-# Helper: Events laden (nur in Zukunft & letzte 60 Tage)
-def list_events(limit=200):
-    return supa().table("events").select("*").order("start", desc=False).limit(limit).execute().data or []
+def is_staff_like(p: dict) -> bool:
+    role = (p or {}).get("role", "player")
+    return role in ["headcoach", "team_manager", "coach", "staff", "admin", "oc", "dc"]
 
-# Helper: Anwesenheit lesen/schreiben
-def get_attendance(event_id):
-    rows = supa().table("attendance").select("*").eq("event_id", event_id).execute().data or []
-    # in ein dict: user_id -> status
-    d = {}
-    for r in rows:
-        d[r["user_id"]] = r["status"]
-    return d
+# Event-Auswahl
+event_id = None
+events = []
+try:
+    res = supa().table("events").select("id,title,start").order("start", desc=False).limit(200).execute()
+    events = res.data or []
+except Exception as e:
+    st.info(t("Tabelle 'events' nicht gefunden oder keine Leserechte.",
+              "Table 'events' missing or no read access.") + f" ({e})")
 
-def save_attendance(event_id, user_id, status):
-    supa().table("attendance").upsert({
-        "event_id": event_id,
-        "user_id": user_id,
-        "status": status
-    }).execute()
-
-# Status-Farben
-def color_for(status: str) -> str:
-    if status == "present":
-        return "✅"
-    if status == "excused":
-        return "🟦"  # blau
-    if status == "late":
-        return "🟧"  # orange
-    return "🟥"      # absent/unknown
-
-# Auswahl Event
-events = list_events()
-if not events:
-    st.info("Noch keine Events.")
+labels = [f"{ev['title']} — {ev['start']}" for ev in events]
+if events:
+    idx = st.selectbox(t("Event wählen", "Select event"), range(len(events)), format_func=lambda i: labels[i])
+    event_id = events[idx]["id"]
+else:
     st.stop()
 
-event_titles = [f"{e['title']} – {e['start']}" for e in events]
-sel = st.selectbox("Event wählen", options=list(range(len(events))),
-                   format_func=lambda i: event_titles[i])
-event = events[sel]
-st.caption(f"Event-ID: {event.get('id')}")
+st.divider()
 
-# Roster (vereinfachte Ansicht: alle Profile)
-roster = supa().table("profiles").select("id, display_name, role").execute().data or []
+# Ampel-Status zusammenfassen
+def status_emoji(s: str) -> str:
+    s = (s or "").lower()
+    return {"present": "🟢", "excused": "🟡", "absent": "🔴"}.get(s, "⚪️")
 
-# Anwesenheit laden
-att_map = get_attendance(event["id"])
+# Teilnehmerliste (read)
+try:
+    res = supa().table("attendance").select("*").eq("event_id", event_id).execute()
+    rows = res.data or []
+    if not rows:
+        st.info(t("Noch keine Einträge.", "No entries yet."))
+    else:
+        for r in rows:
+            name = r.get("display_name") or r.get("user_name") or r.get("user_id", "—")
+            st.write(f"{status_emoji(r.get('status'))}  **{name}** — {r.get('status','')}")
+except Exception as e:
+    st.info(t("Tabelle 'attendance' nicht gefunden oder keine Leserechte.",
+              "Table 'attendance' missing or no read access.") + f" ({e})")
 
-st.subheader("Markieren")
-for p in roster:
-    uid = p["id"]
-    cur = att_map.get(uid, "absent")
-    col1, col2 = st.columns([3, 2])
-    with col1:
-        st.write(f"{color_for(cur)}  **{p['display_name']}**  ·  {p['role']}")
-    with col2:
-        new = st.selectbox(
-            "Status",
-            ["present", "excused", "late", "absent"],
-            index=["present","excused","late","absent"].index(cur),
-            key=f"att_{event['id']}_{uid}"
-        )
-        if new != cur:
-            save_attendance(event["id"], uid, new)
-
-st.success("Änderungen werden automatisch gespeichert.")
-
-# Summen / Ampel
-st.subheader("Übersicht")
-counts = {"present":0, "excused":0, "late":0, "absent":0}
-for v in get_attendance(event["id"]).values():
-    counts[v] = counts.get(v,0)+1
-
-st.write(
-    f"✅ Anwesend: **{counts['present']}**  ·  "
-    f"🟦 Entschuldigt: **{counts['excused']}**  ·  "
-    f"🟧 Verspätet: **{counts['late']}**  ·  "
-    f"🟥 Fehlend: **{counts['absent']}**"
-)
+# Status setzen (nur Staff)
+if is_staff_like(prof):
+    st.divider()
+    st.subheader(t("Status setzen", "Set status"))
+    with st.form("set_att"):
+        uid = st.text_input(t("User-ID (oder Name, je nach Schema)", "User ID (or name, depending on schema)"))
+        status = st.selectbox(t("Status", "Status"), ["present", "excused", "absent"])
+        submit = st.form_submit_button(t("Speichern", "Save"))
+        if submit:
+            try:
+                supa().table("attendance").upsert({
+                    "event_id": event_id,
+                    "user_id": uid,
+                    "status": status,
+                    "updated_by": prof.get("id"),
+                }).execute()
+                st.success(t("Anwesenheit gespeichert.", "Attendance saved."))
+                st.rerun()
+            except Exception as e:
+                st.error(t("Konnte Anwesenheit nicht speichern.", "Could not save attendance.") + f" ({e})")
