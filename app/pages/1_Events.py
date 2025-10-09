@@ -1,59 +1,39 @@
 import streamlit as st
 from datetime import datetime, timedelta
-from _i18n import t, lang_selector
-from _auth import supa, current_profile
+from _auth import require_login, is_staff
+from data import list_events, create_event
 
-st.set_page_config(page_title="Events", page_icon="📅", layout="wide")
-lang_selector()
+st.set_page_config(page_title="Kalender", page_icon="📅", layout="wide")
+prof = require_login()
 
-st.title(t("Kalender", "Events"))
+st.title("Kalender")
 
-prof = current_profile()
-if not prof:
-    st.warning(t("Bitte einloggen.", "Please log in."))
-    st.stop()
+# Liste bestehender Termine
+events = list_events()
+if not events:
+    st.info("Noch keine Termine vorhanden.")
+else:
+    st.dataframe(
+        [{k: v for k, v in e.items() if k in ("title", "start", "end", "location")} for e in events],
+        use_container_width=True,
+    )
 
-def can_create_events(p: dict) -> bool:
-    role = (p or {}).get("role", "player")
-    return role in ["headcoach", "team_manager", "coach", "staff", "admin", "oc", "dc"]
+st.divider()
+st.subheader("Neues Event")
 
-# Liste Events
-st.subheader(t("Termine", "Upcoming events"))
-try:
-    res = supa().table("events").select("*").order("start", desc=False).limit(200).execute()
-    rows = res.data or []
-    if not rows:
-        st.info(t("Noch keine Termine.", "No events yet."))
-    else:
-        for ev in rows:
-            start = ev.get("start")
-            end = ev.get("end")
-            title = ev.get("title", "—")
-            loc = ev.get("location", "")
-            st.markdown(f"**{title}** — {start} → {end}  {('• ' + loc) if loc else ''}")
-except Exception as e:
-    st.info(t("Tabelle 'events' nicht gefunden oder keine Leserechte.", "Table 'events' missing or no read access.") + f" ({e})")
-
-# Neues Event (nur Staff/Coach/HC/TM/OC/DC/Admin)
-if can_create_events(prof):
-    st.divider()
-    st.subheader(t("Neues Event", "New event"))
+if not is_staff(prof):
+    st.info("Nur Staff (HC/TM/Coach/DC/OC/Staff) kann Termine anlegen.")
+else:
     with st.form("new_event"):
         title = st.text_input("Titel / Title")
-        start = st.datetime_input("Start", value=datetime.now()+timedelta(hours=1))
-        end   = st.datetime_input("Ende / End", value=datetime.now()+timedelta(hours=2))
-        loc   = st.text_input("Ort / Location", "")
-        submit = st.form_submit_button(t("Speichern", "Save"))
-        if submit:
-            try:
-                supa().table("events").insert({
-                    "title": title,
-                    "start": start.isoformat(),
-                    "end": end.isoformat(),
-                    "location": loc,
-                    "created_by": prof.get("id"),
-                }).execute()
-                st.success(t("Event gespeichert.", "Event saved."))
+        start = st.datetime_input("Start", value=datetime.now() + timedelta(hours=1))
+        end = st.datetime_input("Ende (optional)", value=None)
+        location = st.text_input("Ort (optional)")
+        save = st.form_submit_button("Speichern")
+        if save:
+            ok = create_event(title.strip(), start, end, location.strip())
+            if ok:
+                st.success("Event gespeichert.")
                 st.rerun()
-            except Exception as e:
-                st.error(t("Konnte Event nicht speichern.", "Could not save event.") + f" ({e})")
+            else:
+                st.error("Konnte Event nicht speichern (prüfe DB-Spalten).")
