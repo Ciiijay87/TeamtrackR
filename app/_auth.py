@@ -1,9 +1,9 @@
 import streamlit as st
 from supabase import create_client, Client
-from typing import Optional, Dict
+from typing import Optional, Any, Dict
 import functools
 
-# ---- Supabase Client aus Secrets ----
+# ---------- Supabase Client ----------
 @functools.lru_cache(maxsize=1)
 def _client() -> Client:
     url = st.secrets["SUPABASE_URL"]
@@ -13,62 +13,79 @@ def _client() -> Client:
 def supa() -> Client:
     return _client()
 
-# ---- Session Helpers ----
-def get_session() -> Optional[Dict]:
+# ---------- Session ----------
+def get_session():
     return st.session_state.get("session")
 
-def require_login() -> Optional[Dict]:
-    sess = get_session()
-    if not sess:
-        st.warning("Bitte einloggen.")
-        st.stop()
-    return sess
-
-def is_staff(profile: Optional[Dict]) -> bool:
-    if not profile: 
-        return False
-    return profile.get("role") in ("headcoach", "team_manager", "coach", "dc", "oc", "staff")
-
-def is_admin(profile: Optional[Dict]) -> bool:
-    if not profile:
-        return False
-    return profile.get("role") in ("headcoach", "team_manager")
-
-# ---- Auth Flows ----
 def sign_in(email: str, password: str) -> bool:
-    res = supa().auth.sign_in_with_password({"email": email, "password": password})
-    st.session_state["session"] = res.session
-    return res.session is not None
-
-def sign_out():
-    supa().auth.sign_out()
-    st.session_state.pop("session", None)
-    st.rerun()
+    try:
+        res = supa().auth.sign_in_with_password({"email": email, "password": password})
+        st.session_state["session"] = res.session
+        return True
+    except Exception as e:
+        st.error("Login fehlgeschlagen. Prüfe E-Mail/Passwort oder E-Mail-Bestätigung.")
+        return False
 
 def sign_up(email: str, password: str, display_name: str) -> bool:
-    res = supa().auth.sign_up(
-        {
+    try:
+        supa().auth.sign_up({
             "email": email,
             "password": password,
             "options": {"data": {"display_name": display_name}},
-        }
-    )
-    # Profil anlegen (pending approval)
-    user = res.user
-    if user:
-        supa().table("profiles").upsert({
-            "id": user.id,
-            "email": email,
-            "display_name": display_name,
-            "role": "player",
-            "approved": False
-        }).execute()
-    return True
+        })
+        st.success("Registriert. Bitte bestätige deine E-Mail.")
+        return True
+    except Exception:
+        st.error("Registrierung fehlgeschlagen.")
+        return False
 
+def sign_out():
+    try:
+        supa().auth.sign_out()
+    finally:
+        st.session_state.pop("session", None)
+
+# ---------- Helpers ----------
+def _safe_get(obj: Any, key: str, default=None):
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    try:
+        return getattr(obj, key)
+    except Exception:
+        return default
+
+# ---------- Profile ----------
 def current_profile() -> Optional[Dict]:
-    sess = get_session()
-    if not sess:
+    s = get_session()
+    if not s or not s.user:
         return None
-    uid = sess.user.id
-    data = supa().table("profiles").select("*").eq("id", uid).single().execute()
-    return data.data
+    uid = s.user.id
+    try:
+        res = supa().table("profiles").select("*").eq("id", uid).single().execute()
+        return res.data if isinstance(res.data, dict) else None
+    except Exception:
+        return None
+
+def require_login() -> Dict:
+    prof = current_profile()
+    if not prof:
+        st.warning("Bitte einloggen.")
+        st.stop()
+    if not _safe_get(prof, "approved", False):
+        st.warning("Dein Zugang ist noch nicht freigeschaltet.")
+        st.stop()
+    return prof
+
+# ---------- Roles ----------
+COACH_ROLES = ("headcoach", "team_manager", "coach", "dc", "oc", "staff")
+
+def role_of(prof: Optional[Dict]) -> Optional[str]:
+    return _safe_get(prof, "role")
+
+def is_admin(prof: Optional[Dict]) -> bool:
+    return role_of(prof) in ("headcoach", "team_manager")
+
+def is_staff(prof: Optional[Dict]) -> bool:
+    return role_of(prof) in COACH_ROLES
